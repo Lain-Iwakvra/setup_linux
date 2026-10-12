@@ -584,6 +584,8 @@ install_aur_software() {
         spotify vcvrack-bin fl-studio-integrator
         # Radio / satellites
         satdump gpredict libsdrplay sdrpp-git
+        # Astronomie / astrophoto
+        opencv4 grapexpert-bin aladin siril
         # Électronique
         easyeda-bin
         # Réseau
