@@ -10,6 +10,16 @@
 #   variables.lua   -> copié vers ~/.config/hypr/variables.lua
 #   Wallpapers/     -> copié dans le dossier Images de l'utilisateur
 #
+# Mise en veille : veille et hibernation sont bloquées (sleep.target et consorts
+# masqués, logind configuré, raccourci Caelestia et hypridle neutralisés).
+# Voir disable_sleep() et neutralize_session_sleep(). Pour revenir en arrière,
+# la commande est rappelée dans le résumé final.
+#
+# Bibliothèques Python : les dépendances des projets (numpy, scipy, matplotlib,
+# numba, torch, PySide6, opencv...) sont installées via pacman, PyTorch en
+# version CUDA si un GPU NVIDIA est présent et le noyau non figé.
+# Voir setup_python_libs().
+#
 # Gel du noyau (variable d'environnement KERNEL_HOLD) :
 #   Une régression du noyau 7.2.x casse le Wi-Fi des puces Realtek rtw89
 #   (RTL8851BE : « probe failed with error -110 », plus d'interface Wi-Fi).
@@ -507,6 +517,68 @@ setup_drivers() {
     fi
 }
 
+# Bibliothèques Python importées par les projets (Attracteur, empilement,
+# fractale, hypercube, lib, minitel, pharma, regresion). Toutes viennent des
+# dépôts officiels : pacman reste cohérent avec le Python système, et les venv
+# créés en « --system-site-packages » les voient.
+setup_python_libs() {
+    log_sub "Bibliothèques Python des projets"
+
+    local pkgs=(
+        # Base, pip et tkinter (regresion/interface.py, minitel)
+        python python-pip python-virtualenv tk
+        # Calcul scientifique (empilement, fractales, regresion)
+        python-numpy python-scipy python-numba python-tqdm python-sympy python-mpmath
+        # Graphiques et images (Attracteur, hypercube, minitel)
+        python-matplotlib python-opencv python-pillow
+        # Interface de bureau (pharma)
+        pyside6
+        # Réseau, web et port série (pharma, minitel)
+        python-requests python-beautifulsoup4 python-wikipedia python-pyserial
+    )
+
+    # PyTorch : version CPU par défaut, CUDA si un GPU NVIDIA est présent et que
+    # le noyau n'est pas figé (le pilote NVIDIA est alors lié à sa version).
+    if has_nvidia_gpu && [[ "$KERNEL_HELD" != true ]]; then
+        if pkg_in_repos python-pytorch-cuda; then
+            # python-pytorch-cuda fournit python-pytorch et le remplace : les
+            # demander tous les deux provoquerait un conflit pacman.
+            pkgs+=(python-pytorch-cuda)
+            log_ok "GPU NVIDIA détecté -> PyTorch avec CUDA"
+        else
+            pkgs+=(python-pytorch)
+            log_warn "python-pytorch-cuda absent des dépôts -> PyTorch CPU"
+        fi
+    else
+        pkgs+=(python-pytorch)
+        if [[ "$KERNEL_HELD" == true ]]; then
+            log_ok "Noyau figé -> PyTorch CPU"
+        else
+            log_ok "Pas de GPU NVIDIA -> PyTorch CPU"
+        fi
+    fi
+
+    install_pkgs "Bibliothèques Python" "${pkgs[@]}"
+
+    # Vérification sans importer les modules lourds (torch, PySide6).
+    local m missing=()
+    for m in numpy scipy matplotlib numba tqdm sympy mpmath cv2 PIL serial \
+             requests bs4 wikipedia PySide6 torch; do
+        python -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('$m') else 1)" \
+            &>/dev/null || missing+=("$m")
+    done
+    # find_spec réussit pour tkinter même si _tkinter (paquet tk) manque :
+    # on tente donc un véritable import.
+    python -c 'import tkinter' &>/dev/null || missing+=(tkinter)
+
+    if (( ${#missing[@]} == 0 )); then
+        log_ok "Tous les modules Python sont importables"
+    else
+        log_warn "Modules introuvables après installation : ${missing[*]}"
+        ISSUES+=("modules Python manquants : ${missing[*]}")
+    fi
+}
+
 setup_ly() {
     log_sub "Installation et activation de ly"
 
@@ -674,11 +746,64 @@ EOF
     log_ok "zram configuré (actif après le prochain redémarrage)"
 }
 
+# Désactive toute mise en veille et l'hibernation. sleep.target est requis par
+# systemd-suspend.service, systemd-hibernate.service, systemd-hybrid-sleep.service
+# et systemd-suspend-then-hibernate.service : le masquer bloque les quatre.
+# Le raccourci Caelestia et hypridle sont neutralisés à l'étape 5, dans
+# neutralize_session_sleep().
+disable_sleep() {
+    log_sub "Désactivation de la mise en veille et de l'hibernation"
+
+    local targets=(sleep.target suspend.target hibernate.target hybrid-sleep.target)
+    local t all_masked=true
+
+    for t in "${targets[@]}"; do
+        [[ "$(systemctl is-enabled "$t" 2>/dev/null)" == masked ]] || all_masked=false
+    done
+
+    if [[ "$all_masked" == true ]]; then
+        log_ok "Cibles de veille déjà masquées"
+    elif sudo systemctl mask --now "${targets[@]}"; then
+        log_ok "Cibles masquées : ${targets[*]}"
+    else
+        log_err "Impossible de masquer les cibles de veille"
+        ISSUES+=("désactivation de la veille")
+        return
+    fi
+
+    # Redondant avec le masquage, mais explicite pour le capot, les boutons et
+    # l'inactivité (certains chemins passent directement par logind).
+    local conf=/etc/systemd/logind.conf.d/90-no-sleep.conf
+    sudo mkdir -p /etc/systemd/logind.conf.d
+    sudo tee "$conf" > /dev/null <<'EOF'
+# Ajouté par setup-nouveau-pc.sh : aucune mise en veille automatique
+[Login]
+HandleLidSwitch=ignore
+HandleLidSwitchExternalPower=ignore
+HandleLidSwitchDocked=ignore
+HandleSuspendKey=ignore
+HandleHibernateKey=ignore
+IdleAction=ignore
+EOF
+    log_ok "logind : capot, boutons veille et inactivité ignorés ($conf)"
+
+    # logind n'est pas redémarré (cela terminerait la session graphique) : le
+    # drop-in s'appliquera au prochain démarrage. Le masquage, lui, est immédiat.
+    log_warn "Le réglage logind s'appliquera après le prochain redémarrage."
+
+    for t in "${targets[@]}"; do
+        if [[ "$(systemctl is-enabled "$t" 2>/dev/null)" != masked ]]; then
+            log_err "La cible $t n'est pas masquée"
+            ISSUES+=("désactivation de la veille ($t)")
+        fi
+    done
+}
+
 install_comfort_packages() {
     log_sub "Autonomie, réseau et confort"
 
     local pkgs=(
-        bluez bluez-utils ufw zram-generator
+        bluez bluez-utils blueman ufw zram-generator
         gvfs udiskie file-roller hyprpolkitagent
         noto-fonts noto-fonts-emoji ttf-liberation
     )
@@ -695,8 +820,9 @@ install_comfort_packages() {
     fi
     setup_firewall
     setup_zram
+    disable_sleep
 
-    log_warn "Pensez à lancer udiskie et hyprpolkitagent au démarrage de votre session Hyprland"
+    log_warn "Pensez à lancer udiskie, hyprpolkitagent et blueman-applet au démarrage de votre session Hyprland"
     log_warn "(programmes exécutés au lancement, dans votre config Hyprland)."
 }
 
@@ -715,6 +841,7 @@ step_software() {
     log_step "[4/5] Pilotes, ly, logiciels du quotidien et confort"
 
     setup_drivers            # d'abord : Steam a besoin des pilotes 32 bits
+    setup_python_libs        # après les pilotes : PyTorch CUDA dépend du GPU
     setup_ly
     install_daily_software
     install_aur_software
@@ -847,6 +974,79 @@ copy_personal_files() {
     fi
 }
 
+# La veille est déjà bloquée au niveau système (disable_sleep). Ici on évite en
+# plus les appels « systemctl suspend[‑then-hibernate] » côté session, qui
+# échoueraient sur les unités masquées : raccourci Caelestia et hypridle.
+# Le verrouillage et l'extinction de l'écran de hypridle restent intacts.
+neutralize_session_sleep() {
+    log_sub "Veille : neutralisation des déclencheurs de session"
+
+    # 1) Raccourci Caelestia (SUPER + SHIFT + L)
+    local vars="$HOME/.config/hypr/variables.lua"
+    if [[ -f "$vars" ]]; then
+        if grep -qE '^[[:space:]]*sleepGestureCmd[[:space:]]*=[[:space:]]*"true"' "$vars"; then
+            log_ok "sleepGestureCmd déjà neutralisé"
+        elif grep -qE '^[[:space:]]*sleepGestureCmd' "$vars"; then
+            backup_user_file "$vars"
+            sed -i -E \
+                's/^([[:space:]]*sleepGestureCmd[[:space:]]*=[[:space:]]*).*/\1"true"/' \
+                "$vars"
+            log_ok "sleepGestureCmd neutralisé dans $vars"
+        fi
+    fi
+
+    # 2) hypridle : commenter les blocs « listener » qui lancent une veille
+    local idle="$HOME/.config/hypr/hypridle.conf"
+    if [[ ! -f "$idle" ]]; then
+        log_ok "hypridle.conf absent : rien à neutraliser"
+        return
+    fi
+    if ! grep -qE '^[[:space:]]*[[:alnum:]_-]+[[:space:]]*=.*(suspend|hibernate)' "$idle"; then
+        log_ok "hypridle : aucun déclencheur de veille"
+        return
+    fi
+
+    local tmp
+    tmp="$(mktemp)"
+    if awk '
+            /^[[:space:]]*listener[[:space:]]*\{/ {
+                inblock = 1; count = 0; suspend = 0
+                block[++count] = $0
+                next
+            }
+            inblock {
+                block[++count] = $0
+                if ($0 ~ /^[[:space:]]*[[:alnum:]_-]+[[:space:]]*=.*(suspend|hibernate)/) suspend = 1
+                if ($0 ~ /^[[:space:]]*\}/) {
+                    inblock = 0
+                    for (i = 1; i <= count; i++)
+                        print (suspend ? "# " : "") block[i]
+                    delete block
+                }
+                next
+            }
+            { print }
+            END {
+                # Bloc incomplet : on le réécrit tel quel, sans le commenter.
+                if (inblock)
+                    for (i = 1; i <= count; i++) print block[i]
+            }
+        ' "$idle" > "$tmp" && [[ -s "$tmp" ]]; then
+        if cmp -s "$idle" "$tmp"; then
+            log_warn "hypridle : déclencheur de veille hors d'un bloc listener, à vérifier à la main"
+            rm -f "$tmp"
+            return
+        fi
+        backup_user_file "$idle"
+        cat "$tmp" > "$idle"   # « cat > » conserve droits et éventuel lien symbolique
+        log_ok "hypridle : bloc(s) de veille commenté(s) dans $idle"
+    else
+        log_err "hypridle.conf : réécriture impossible, fichier laissé intact"
+        ISSUES+=("hypridle.conf")
+    fi
+    rm -f "$tmp"
+}
+
 step_caelestia() {
     log_step "[5/5] Installation du rice Caelestia"
 
@@ -873,6 +1073,7 @@ step_caelestia() {
     configure_keyboard
     configure_monitors
     copy_personal_files
+    neutralize_session_sleep
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -952,6 +1153,13 @@ print_summary() {
         echo "« setup-nouveau-pc » de $PACMAN_CONF puis testez. Si le Wi-Fi disparaît :"
         echo "  sudo downgrade linux linux-headers"
     fi
+    echo ""
+    echo "MISE EN VEILLE DÉSACTIVÉE (veille et hibernation bloquées)."
+    echo "Pour la réactiver :"
+    echo "  sudo systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.target"
+    echo "  sudo rm /etc/systemd/logind.conf.d/90-no-sleep.conf"
+    echo "  (puis rétablir sleepGestureCmd dans ~/.config/hypr/variables.lua et"
+    echo "   décommenter les blocs de veille de ~/.config/hypr/hypridle.conf)"
     echo ""
     echo "Prochaine étape recommandée : redémarrez le PC (groupe wireshark, zram,"
     echo "écran de connexion ly), puis démarrez votre session"

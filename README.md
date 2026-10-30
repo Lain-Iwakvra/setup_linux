@@ -2,9 +2,10 @@
 
 Script Bash qui installe et configure en une passe un **nouveau PC
 EndeavourOS / Arch** : miroirs, pilotes, logiciels, gestionnaire de
-connexion, rice **Caelestia**, pare-feu, zram, TLP. Idempotent : il peut
-être relancé sans risque, chaque étape vérifie l'état avant d'agir et les
-fichiers modifiés sont sauvegardés.
+connexion, rice **Caelestia**, pare-feu, zram, TLP, bibliothèques Python des
+projets, veille désactivée. Idempotent : il peut être relancé sans risque,
+chaque étape vérifie l'état avant d'agir et les fichiers modifiés sont
+sauvegardés.
 
 Projet **autonome** : il ne dépend pas du dépôt `lib`.
 
@@ -12,7 +13,7 @@ Projet **autonome** : il ne dépend pas du dépôt `lib`.
 
 | Fichier | Rôle |
 |---|---|
-| `setup-nouveau-pc.sh` | le script d'installation (986 lignes, 5 étapes) |
+| `setup-nouveau-pc.sh` | le script d'installation (5 étapes) |
 | `variables.lua` | configuration Caelestia/Hyprland (copiée vers `~/.config/hypr/`) |
 | `Wallpapers/` | fonds d'écran copiés dans le dossier Images de l'utilisateur |
 
@@ -27,9 +28,10 @@ Projet **autonome** : il ne dépend pas du dépôt `lib`.
    compilation depuis les sources), avec vérification que le binaire
    démarre réellement.
 4. **Pilotes, ly, logiciels** — microcode CPU, pilotes GPU (Intel/AMD/NVIDIA
-   détectés par identifiants PCI), gestionnaire de connexion `ly`, logiciels
-   du quotidien (dépôts puis AUR), confort (Bluetooth, ufw, zram, TLP),
-   entretien (paccache, fstrim).
+   détectés par identifiants PCI), **bibliothèques Python des projets**,
+   gestionnaire de connexion `ly`, logiciels du quotidien (dépôts puis AUR),
+   confort (Bluetooth/blueman, ufw, zram, TLP, **veille désactivée**), entretien
+   (paccache, fstrim).
 5. **Caelestia** — `caelestia install`, clavier français, détection des
    écrans via `hyprctl`/`jq`, copie de `variables.lua` et des wallpapers.
 
@@ -77,6 +79,46 @@ Placez à côté du script :
 
 S'ils sont absents, le script le signale mais continue.
 
+## Mise en veille désactivée
+
+Le script bloque la veille et l'hibernation :
+
+- `sleep.target`, `suspend.target`, `hibernate.target` et `hybrid-sleep.target`
+  sont **masqués** (`systemctl mask`) — `sleep.target` étant requis par tous les
+  services de veille, y compris `suspend-then-hibernate` ;
+- un drop-in `logind` (`/etc/systemd/logind.conf.d/90-no-sleep.conf`) ignore le
+  capot, les boutons veille/hibernation et l'inactivité (actif au redémarrage) ;
+- le raccourci Caelestia (`sleepGestureCmd` dans `variables.lua`) et les blocs
+  de veille de `~/.config/hypr/hypridle.conf` sont neutralisés, pour éviter des
+  appels à des unités masquées. Le verrouillage et l'extinction de l'écran
+  restent fonctionnels.
+
+Pour réactiver la veille :
+
+```bash
+sudo systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.target
+sudo rm /etc/systemd/logind.conf.d/90-no-sleep.conf
+# puis rétablir sleepGestureCmd dans ~/.config/hypr/variables.lua
+# et décommenter les blocs de veille de ~/.config/hypr/hypridle.conf
+```
+
+## Bibliothèques Python
+
+Installées via `pacman` (dépôts officiels), pour rester cohérentes avec le
+Python système et visibles depuis les venv en `--system-site-packages` :
+
+| Usage | Paquets |
+|---|---|
+| Base, venv, tkinter | `python`, `python-pip`, `python-virtualenv`, `tk` |
+| Calcul scientifique | `python-numpy`, `python-scipy`, `python-numba`, `python-tqdm`, `python-sympy`, `python-mpmath` |
+| Graphiques et images | `python-matplotlib`, `python-opencv`, `python-pillow` |
+| Interface de bureau | `pyside6` |
+| Réseau, web, série | `python-requests`, `python-beautifulsoup4`, `python-wikipedia`, `python-pyserial` |
+| Deep learning | `python-pytorch` (ou `python-pytorch-cuda`, qui le remplace, si GPU NVIDIA et noyau non figé) |
+
+Une vérification finale (`importlib.util.find_spec`) liste les modules
+manquants dans le résumé.
+
 ## Sécurité et sauvegardes
 
 - Tout fichier modifié est sauvegardé **hors** de `~/.config/hypr/`
@@ -90,7 +132,8 @@ S'ils sont absents, le script le signale mais continue.
 ## Résumé final
 
 À la fin, un bilan liste les points à vérifier (`ISSUES`) s'il y en a, le
-dossier des sauvegardes, et l'état du gel du noyau. Un redémarrage est
+dossier des sauvegardes, l'état du gel du noyau et le rappel de la mise en
+veille désactivée (avec la commande pour la réactiver). Un redémarrage est
 recommandé (groupe `wireshark`, `zram`, service `ly`).
 
 ## Licence
