@@ -20,6 +20,9 @@
 # version CUDA si un GPU NVIDIA est présent et le noyau non figé.
 # Voir setup_python_libs().
 #
+# Outils pentest de brain_worm : ajoutés aux listes de paquets existantes
+# (voir install_daily_software() et install_aur_software()).
+#
 # Gel du noyau (variable d'environnement KERNEL_HOLD) :
 #   Une régression du noyau 7.2.x casse le Wi-Fi des puces Realtek rtw89
 #   (RTL8851BE : « probe failed with error -110 », plus d'interface Wi-Fi).
@@ -623,8 +626,9 @@ install_daily_software() {
         blender freecad occt stellarium gnuradio-companion reaper
         # Développement
         neovim uv opencode
-        # Réseau
+        # Réseau / pentest web (brain_worm)
         networkmanager-dmenu nmap mtr nethogs vnstat wireshark-qt ethtool tor
+        sqlmap hydra nikto testssl.sh gobuster zaproxy
         # Utilitaires système (jq est utilisé plus bas par ce script)
         jq ncdu iotop ripgrep fzf bat p7zip unzip timeshift pacman-contrib
     )
@@ -662,6 +666,9 @@ install_aur_software() {
         easyeda-bin
         # Réseau
         proton-vpn-gtk-app speedtest-cli google-chrome
+        # Pentest web (brain_worm)
+        ffuf nuclei subfinder dalfox katana whatweb arjun seclists
+        httpx naabu dnsx amass theharvester-git sslyze feroxbuster kiterunner-bin dirsearch dirstalk
         # Système
         hyprmod downgrade tmog-bin
     )
