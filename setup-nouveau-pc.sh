@@ -7,13 +7,18 @@
 # avant d'agir, et les fichiers modifiés sont sauvegardés.
 #
 # Fichiers optionnels à placer à côté du script :
-#   variables.lua   -> copié vers ~/.config/hypr/variables.lua
+#   variables.lua   -> copié vers ~/.config/caelestia/hypr-vars.lua
+#                      (surcharges utilisateur des variables Caelestia)
 #   Wallpapers/     -> copié dans le dossier Images de l'utilisateur
 #
 # Mise en veille : veille et hibernation sont bloquées (sleep.target et consorts
 # masqués, logind configuré, raccourci Caelestia et hypridle neutralisés).
 # Voir disable_sleep() et neutralize_session_sleep(). Pour revenir en arrière,
 # la commande est rappelée dans le résumé final.
+#
+# Caelestia (nouvelle version Lua) : les fichiers de ~/.config/hypr/ sont
+# écrasés par « caelestia install ». Ce script n'y touche plus : clavier, écrans
+# et surcharges vont dans ~/.config/caelestia/hypr-user.lua et hypr-vars.lua.
 #
 # Bibliothèques Python : les dépendances des projets (numpy, scipy, matplotlib,
 # numba, torch, PySide6, opencv...) sont installées via pacman, PyTorch en
@@ -63,6 +68,11 @@ KERNEL_HELD=false                    # vrai si le noyau a été figé par ce scr
 HELD_PKGS=()                         # paquets figés (noyaux + headers)
 PACMAN_CONF="/etc/pacman.conf"
 SYSFS_PCI="/sys/bus/pci/devices"
+
+# Fichiers personnels Caelestia (jamais écrasés par « caelestia install »).
+CAELESTIA_DIR="$HOME/.config/caelestia"
+HYPR_USER_LUA="$CAELESTIA_DIR/hypr-user.lua"
+HYPR_VARS_LUA="$CAELESTIA_DIR/hypr-vars.lua"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Fonctions utilitaires
@@ -861,38 +871,23 @@ step_software() {
 # 5) Caelestia — en dernier
 # ──────────────────────────────────────────────────────────────────────────────
 
-configure_keyboard() {
-    local f="$HOME/.config/hypr/hyprland/input.lua"
+# Depuis la version Lua de Caelestia, ~/.config/hypr/ est écrasé à chaque
+# « caelestia install ». Les réglages personnels vont donc dans hypr-user.lua,
+# chargé en dernier par la config upstream. Bloc délimité par des repères pour
+# rester idempotent et ne pas écraser d'éventuelles personnalisations ajoutées
+# par l'utilisateur autour.
+configure_caelestia_user() {
+    log_sub "Configuration Hyprland utilisateur (hypr-user.lua)"
 
-    if [[ ! -f "$f" ]]; then
-        log_warn "$f introuvable, clavier non configuré"
+    if ! mkdir -p "$CAELESTIA_DIR"; then
+        log_err "Impossible de créer $CAELESTIA_DIR"
+        ISSUES+=("dossier $CAELESTIA_DIR")
         return
     fi
+    # Caelestia le crée vide ; on fait pareil s'il n'existe pas encore.
+    [[ -e "$HYPR_USER_LUA" ]] || : > "$HYPR_USER_LUA"
 
-    backup_user_file "$f"
-    sed -i -E 's/(kb_layout[[:space:]]*=[[:space:]]*)"[^"]*"/\1"fr"/' "$f"
-    sed -i -E 's/(numlock_by_default[[:space:]]*=[[:space:]]*)(true|false)/\1true/' "$f"
-
-    if grep -Eq 'kb_layout[[:space:]]*=[[:space:]]*"fr"' "$f"; then
-        log_ok "Clavier fr appliqué dans $f"
-    else
-        log_warn "kb_layout introuvable dans $f : à régler à la main"
-    fi
-}
-
-configure_monitors() {
-    local f="$HOME/.config/hypr/hyprland.lua"
-
-    if [[ ! -f "$f" ]]; then
-        log_warn "$f introuvable, écran non configuré"
-        return
-    fi
-    if ! grep -q -- '-- Default monitor conf' "$f"; then
-        log_warn "Repère « -- Default monitor conf » introuvable dans $f, écran non configuré"
-        return
-    fi
-
-    local block_file new_file json=""
+    local block_file new_file json="" monitors=""
     block_file="$(mktemp)"
     new_file="$(mktemp)"
 
@@ -901,52 +896,59 @@ configure_monitors() {
         && jq -e 'length > 0' <<<"$json" &>/dev/null; then
         # Un bloc par écran. Le taux de rafraîchissement est formaté par jq :
         # un printf bash utiliserait la virgule décimale de la locale française.
-        {
-            echo '-- Default monitor conf'
-            jq -r '.[] | "hl.monitor({\n    output   = \"\(.name)\",\n    mode     = \"\(.width)x\(.height)@\((.refreshRate * 100 | round) / 100)\",\n    position = \"\(.x)x\(.y)\",\n    scale    = \(.scale),\n})"' <<<"$json"
-            echo '-- End default monitor conf'
-        } > "$block_file"
+        monitors="$(jq -r '.[] | "hl.monitor({\n    output   = \"\(.name)\",\n    mode     = \"\(.width)x\(.height)@\((.refreshRate * 100 | round) / 100)\",\n    position = \"\(.x)x\(.y)\",\n    scale    = \(.scale),\n})"' <<<"$json")"
         log_ok "Écran(s) détecté(s) via hyprctl : $(jq -r '[.[] | "\(.name) (\(.width)x\(.height))"] | join(", ")' <<<"$json")"
     else
-        cat > "$block_file" <<'EOF'
--- Default monitor conf
-hl.monitor({
-    output   = "",
-    mode     = "preferred",
-    position = "auto",
-    scale    = "auto",
-})
--- End default monitor conf
-EOF
-        log_warn "Hyprland n'est pas lancé (ou jq absent) : config d'écran générique (auto-détection)"
+        log_warn "Hyprland n'est pas lancé (ou jq absent) : règle d'écran par défaut de Caelestia conservée"
     fi
 
-    # Remplace l'ancien bloc. Il se termine au repère « -- End default monitor conf »
-    # (présent après une première exécution) ou, pour la config d'origine, à la
-    # première ligne « }) ». Si la fin est introuvable, awk échoue (END) et le
-    # fichier n'est pas touché.
-    local has_end=0
-    grep -q -- '-- End default monitor conf' "$f" && has_end=1
+    {
+        echo '-- BEGIN setup-nouveau-pc (bloc géré automatiquement)'
+        echo 'hl.config({'
+        echo '    input = {'
+        echo '        kb_layout = "fr",'
+        echo '        numlock_by_default = true,'
+        echo '    },'
+        echo '})'
+        if [[ -n "$monitors" ]]; then
+            echo "$monitors"
+        else
+            echo '-- Écrans : auto-détection (aucune règle spécifique ajoutée).'
+        fi
+        echo '-- END setup-nouveau-pc'
+    } > "$block_file"
 
-    if awk -v blockfile="$block_file" -v has_end="$has_end" '
-            /-- Default monitor conf/ && !done {
+    # Remplace uniquement notre bloc. S'il n'existe pas, il est ajouté à la fin
+    # (hypr-user.lua est chargé en dernier). Un repère de début sans fin fait
+    # échouer awk (END) et laisse le fichier intact.
+    local has_block=0
+    grep -q '^-- BEGIN setup-nouveau-pc' "$HYPR_USER_LUA" && has_block=1
+
+    if awk -v blockfile="$block_file" '
+            /^-- BEGIN setup-nouveau-pc/ && !done {
                 while ((getline line < blockfile) > 0) print line
                 close(blockfile)
                 skip = 1; done = 1
                 next
             }
-            skip && has_end == 1 && /-- End default monitor conf/ { skip = 0; next }
-            skip && has_end == 0 && /^[[:space:]]*}\)/ { skip = 0; next }
+            skip && /^-- END setup-nouveau-pc/ { skip = 0; next }
             skip { next }
             { print }
             END { if (skip) exit 1 }
-        ' "$f" > "$new_file" && [[ -s "$new_file" ]]; then
-        backup_user_file "$f"
-        cat "$new_file" > "$f"   # « cat > » conserve droits et éventuel lien symbolique
-        log_ok "Écran configuré dans $f"
+        ' "$HYPR_USER_LUA" > "$new_file"; then
+        # Aucun bloc existant (fichier vide ou vierge) : on l'ajoute en fin.
+        [[ "$has_block" -eq 0 ]] && cat "$block_file" >> "$new_file"
+        if [[ -s "$new_file" ]]; then
+            backup_user_file "$HYPR_USER_LUA"
+            cat "$new_file" > "$HYPR_USER_LUA"   # « cat > » conserve droits et éventuel lien symbolique
+            log_ok "Clavier fr et écrans configurés dans $HYPR_USER_LUA"
+        else
+            log_err "Résultat vide pour $HYPR_USER_LUA : fichier laissé intact"
+            ISSUES+=("configuration Hyprland (hypr-user.lua)")
+        fi
     else
-        log_err "Bloc moniteur non reconnu dans $f : fichier laissé intact"
-        ISSUES+=("configuration de l'écran (hyprland.lua)")
+        log_err "Bloc setup mal fermé dans $HYPR_USER_LUA : fichier laissé intact"
+        ISSUES+=("configuration Hyprland (hypr-user.lua)")
     fi
 
     rm -f "$block_file" "$new_file"
@@ -954,13 +956,15 @@ EOF
 
 copy_personal_files() {
     local vars_src="$SCRIPT_DIR/variables.lua"
-    local vars_dst="$HOME/.config/hypr/variables.lua"
 
+    # Nouvelle version de Caelestia : les surcharges utilisateur vont dans
+    # ~/.config/caelestia/hypr-vars.lua, fusionnées par hyprland.lua avec les
+    # variables upstream. Ne jamais écrire dans ~/.config/hypr/ (écrasé).
     if [[ -f "$vars_src" ]]; then
-        mkdir -p "$(dirname "$vars_dst")"
-        [[ -f "$vars_dst" ]] && backup_user_file "$vars_dst"
-        cp "$vars_src" "$vars_dst"
-        log_ok "variables.lua copié vers $vars_dst"
+        mkdir -p "$CAELESTIA_DIR"
+        [[ -f "$HYPR_VARS_LUA" ]] && backup_user_file "$HYPR_VARS_LUA"
+        cp "$vars_src" "$HYPR_VARS_LUA"
+        log_ok "variables.lua copié vers $HYPR_VARS_LUA"
     else
         log_warn "variables.lua introuvable à côté du script, non copié"
     fi
@@ -988,18 +992,58 @@ copy_personal_files() {
 neutralize_session_sleep() {
     log_sub "Veille : neutralisation des déclencheurs de session"
 
-    # 1) Raccourci Caelestia (SUPER + SHIFT + L)
-    local vars="$HOME/.config/hypr/variables.lua"
-    if [[ -f "$vars" ]]; then
-        if grep -qE '^[[:space:]]*sleepGestureCmd[[:space:]]*=[[:space:]]*"true"' "$vars"; then
-            log_ok "sleepGestureCmd déjà neutralisé"
-        elif grep -qE '^[[:space:]]*sleepGestureCmd' "$vars"; then
+    # 1) Raccourci Caelestia (gesture 4 doigts + SUPER + SHIFT + L).
+    #    Caelestia fusionne hypr-vars.lua dans ses variables : c'est le bon
+    #    endroit pour remplacer sleepGestureCmd, sans toucher à ~/.config/hypr/.
+    mkdir -p "$CAELESTIA_DIR"
+    local vars="$HYPR_VARS_LUA" tmp=""
+    if [[ ! -f "$vars" ]]; then
+        cat > "$vars" <<'EOF'
+return {
+    sleepGestureCmd = "true",
+}
+EOF
+        log_ok "sleepGestureCmd neutralisé (fichier créé : $vars)"
+    elif grep -qE '^[[:space:]]*sleepGestureCmd[[:space:]]*=[[:space:]]*"true"' "$vars"; then
+        log_ok "sleepGestureCmd déjà neutralisé dans $vars"
+    elif grep -qE '^[[:space:]]*sleepGestureCmd' "$vars"; then
+        backup_user_file "$vars"
+        sed -i -E \
+            's/^([[:space:]]*sleepGestureCmd[[:space:]]*=[[:space:]]*).*/\1"true",/' \
+            "$vars"
+        log_ok "sleepGestureCmd neutralisé dans $vars"
+    else
+        # Fichier créé vide par Caelestia (« return {} ») : insère la clé avant
+        # l'accolade fermante de premier niveau.
+        tmp="$(mktemp)"
+        if awk -v key='    sleepGestureCmd = "true",' '
+                { lines[NR] = $0 }
+                END {
+                    last = 0
+                    for (i = 1; i <= NR; i++) if (lines[i] ~ /^}/) last = i
+                    if (!last) exit 1
+                    for (i = 1; i <= NR; i++) {
+                        if (i == last) print key
+                        print lines[i]
+                    }
+                }
+            ' "$vars" > "$tmp" && [[ -s "$tmp" ]]; then
             backup_user_file "$vars"
-            sed -i -E \
-                's/^([[:space:]]*sleepGestureCmd[[:space:]]*=[[:space:]]*).*/\1"true"/' \
-                "$vars"
+            cat "$tmp" > "$vars"
             log_ok "sleepGestureCmd neutralisé dans $vars"
+        else
+            # Forme inattendue (ex. « return {} » sur une ligne) : on repart du
+            # modèle du dépôt plutôt que de risquer du Lua invalide.
+            if [[ -f "$SCRIPT_DIR/variables.lua" ]]; then
+                backup_user_file "$vars"
+                cp "$SCRIPT_DIR/variables.lua" "$vars"
+                log_ok "hypr-vars.lua remplacé par le modèle du dépôt (veille neutralisée)"
+            else
+                log_warn "sleepGestureCmd absent et modèle introuvable : à vérifier dans $vars"
+                ISSUES+=("sleepGestureCmd ($vars)")
+            fi
         fi
+        [[ -n "$tmp" ]] && rm -f "$tmp"
     fi
 
     # 2) hypridle : commenter les blocs « listener » qui lancent une veille
@@ -1054,6 +1098,74 @@ neutralize_session_sleep() {
     rm -f "$tmp"
 }
 
+# Vérifie le variables.lua géré par Caelestia (~/.config/hypr/). Les anciennes
+# versions de ce script y déposaient une copie de variables.lua ; si elle reste
+# (ou est cassée), Hyprland échoue avec « '}' expected ... near 'kbGoToWs' ».
+# On ne réécrit jamais ce fichier avec du contenu personnel : on le supprime
+# avant installation pour que « caelestia install » le redéploie proprement,
+# puis on le revérifie et on le restaure depuis upstream en dernier recours.
+lua_file_ok() {
+    command -v lua >/dev/null 2>&1 || return 0   # pas de lua : contrôle ignoré
+    LUA_CHECK_FILE="$1" lua -e '
+        local f, err = loadfile(os.getenv("LUA_CHECK_FILE"))
+        if not f then
+            io.stderr:write(err or "erreur Lua inconnue", "\n")
+            os.exit(1)
+        end
+    ' >/dev/null 2>&1
+}
+
+ensure_caelestia_variables() {
+    local phase="$1" vars="$HOME/.config/hypr/variables.lua" bad=0 tmp=""
+    if [[ ! -e "$vars" ]]; then
+        if [[ "$phase" == after ]]; then
+            log_err "$vars absent après « caelestia install »"
+            ISSUES+=("variables.lua Caelestia absent")
+        fi
+        return 0
+    fi
+
+    grep -Eq 'configuration du rice Caelestia|setup-nouveau-pc' "$vars" && bad=1
+    if command -v lua >/dev/null 2>&1 && ! lua_file_ok "$vars"; then
+        bad=1
+    fi
+
+    if [[ "$phase" == before ]]; then
+        if [[ "$bad" -eq 1 ]]; then
+            log_warn "$vars est obsolète ou invalide : sauvegarde puis suppression avant réinstallation"
+            backup_user_file "$vars" || log_warn "Sauvegarde de $vars impossible"
+            if [[ -f "$vars" || -L "$vars" ]]; then
+                rm -f -- "$vars" || ISSUES+=("suppression de $vars")
+            fi
+        fi
+        return 0
+    fi
+
+    # Après installation : le déploiement doit avoir fourni un fichier valide.
+    if [[ "$bad" -eq 0 ]]; then
+        log_ok "variables.lua Caelestia valide"
+        return
+    fi
+
+    log_warn "$vars invalide après installation : tentative de restauration depuis upstream"
+    tmp="$(mktemp)"
+    if curl -fsSL --max-time 15 \
+        -o "$tmp" https://raw.githubusercontent.com/caelestia-dots/caelestia/main/hypr/variables.lua \
+        && lua_file_ok "$tmp"; then
+        if backup_user_file "$vars"; then
+            cat "$tmp" > "$vars"
+            log_ok "variables.lua Caelestia restauré depuis upstream"
+        else
+            log_err "Sauvegarde impossible : $vars laissé intact"
+            ISSUES+=("variables.lua Caelestia invalide")
+        fi
+    else
+        log_err "Restauration automatique impossible : $vars reste invalide"
+        ISSUES+=("variables.lua Caelestia invalide")
+    fi
+    rm -f "$tmp"
+}
+
 step_caelestia() {
     log_step "[5/5] Installation du rice Caelestia"
 
@@ -1070,17 +1182,30 @@ step_caelestia() {
     fi
     log_ok "caelestia-cli installé"
 
-    if ! caelestia install; then
+    # Une ancienne copie (ou un fichier corrompu) dans ~/.config/hypr/ ferait
+    # échouer le chargement de Hyprland : on la retire avant le déploiement.
+    ensure_caelestia_variables before
+
+    # --aur-helper paru : le script utilise paru comme assistant AUR, on évite
+    # que le CLI reparte sur yay ou demande quel helper utiliser.
+    if ! caelestia install --aur-helper paru; then
         log_err "\"caelestia install\" a rencontré une erreur"
         ISSUES+=("caelestia install")
         return
     fi
     log_ok "Rice Caelestia installé"
+    ensure_caelestia_variables after
 
-    configure_keyboard
-    configure_monitors
+    # Après l'installation : ~/.config/hypr/ est écrasé, on ne touche que les
+    # fichiers personnels de ~/.config/caelestia/.
+    configure_caelestia_user
     copy_personal_files
     neutralize_session_sleep
+
+    if command -v hyprctl &>/dev/null; then
+        hyprctl reload &>/dev/null || true
+        log_ok "Configuration Hyprland rechargée (hyprctl reload)"
+    fi
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1165,7 +1290,7 @@ print_summary() {
     echo "Pour la réactiver :"
     echo "  sudo systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.target"
     echo "  sudo rm /etc/systemd/logind.conf.d/90-no-sleep.conf"
-    echo "  (puis rétablir sleepGestureCmd dans ~/.config/hypr/variables.lua et"
+    echo "  (puis rétablir sleepGestureCmd dans ~/.config/caelestia/hypr-vars.lua et"
     echo "   décommenter les blocs de veille de ~/.config/hypr/hypridle.conf)"
     echo ""
     echo "Prochaine étape recommandée : redémarrez le PC (groupe wireshark, zram,"

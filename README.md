@@ -14,7 +14,7 @@ Projet **autonome** : il ne dépend pas du dépôt `lib`.
 | Fichier | Rôle |
 |---|---|
 | `setup-nouveau-pc.sh` | le script d'installation (5 étapes) |
-| `variables.lua` | configuration Caelestia/Hyprland (copiée vers `~/.config/hypr/`) |
+| `variables.lua` | surcharges Caelestia (copiées vers `~/.config/caelestia/hypr-vars.lua`) |
 | `Wallpapers/` | fonds d'écran copiés dans le dossier Images de l'utilisateur |
 
 ## Les 5 étapes
@@ -32,8 +32,14 @@ Projet **autonome** : il ne dépend pas du dépôt `lib`.
    gestionnaire de connexion `ly`, logiciels du quotidien (dépôts puis AUR),
    confort (Bluetooth/blueman, ufw, zram, TLP, **veille désactivée**), entretien
    (paccache, fstrim).
-5. **Caelestia** — `caelestia install`, clavier français, détection des
-   écrans via `hyprctl`/`jq`, copie de `variables.lua` et des wallpapers.
+5. **Caelestia** — `caelestia install --aur-helper paru`, clavier français et
+   écrans détectés via `hyprctl`/`jq` écrits dans
+   `~/.config/caelestia/hypr-user.lua`, copie de `variables.lua` vers
+   `hypr-vars.lua` et des wallpapers. Aucune modification de `~/.config/hypr/`
+   (écrasé par le rice à chaque installation), sauf suppression d'un
+   `variables.lua` obsolète/cassé laissé par une ancienne version du script :
+   le rice le redéploie ensuite (et le script le restaure depuis upstream si
+   besoin).
 
 ## Usage
 
@@ -74,7 +80,9 @@ sudo downgrade linux linux-headers
 
 Placez à côté du script :
 
-- `variables.lua` → copié vers `~/.config/hypr/variables.lua`
+- `variables.lua` → copié vers `~/.config/caelestia/hypr-vars.lua`
+  (surcharges : ne contient que les valeurs à changer, pas une copie complète
+  des variables upstream)
 - `Wallpapers/` → copié dans le dossier Images (`xdg-user-dir PICTURES`)
 
 S'ils sont absents, le script le signale mais continue.
@@ -88,18 +96,32 @@ Le script bloque la veille et l'hibernation :
   services de veille, y compris `suspend-then-hibernate` ;
 - un drop-in `logind` (`/etc/systemd/logind.conf.d/90-no-sleep.conf`) ignore le
   capot, les boutons veille/hibernation et l'inactivité (actif au redémarrage) ;
-- le raccourci Caelestia (`sleepGestureCmd` dans `variables.lua`) et les blocs
-  de veille de `~/.config/hypr/hypridle.conf` sont neutralisés, pour éviter des
-  appels à des unités masquées. Le verrouillage et l'extinction de l'écran
-  restent fonctionnels.
+- le raccourci Caelestia (`sleepGestureCmd = "true"` dans
+  `~/.config/caelestia/hypr-vars.lua`) et, sur une installation legacy, les
+  blocs de veille de `~/.config/hypr/hypridle.conf` sont neutralisés, pour
+  éviter des appels à des unités masquées. Le verrouillage et l'extinction de
+  l'écran restent fonctionnels.
 
 Pour réactiver la veille :
 
 ```bash
 sudo systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.target
 sudo rm /etc/systemd/logind.conf.d/90-no-sleep.conf
-# puis rétablir sleepGestureCmd dans ~/.config/hypr/variables.lua
+# puis rétablir sleepGestureCmd dans ~/.config/caelestia/hypr-vars.lua
 # et décommenter les blocs de veille de ~/.config/hypr/hypridle.conf
+```
+
+### Dépannage : `'} expected ... near 'kbGoToWs''`
+
+Si Hyprland refuse de démarrer avec une erreur sur
+`~/.config/hypr/variables.lua`, c'est une ancienne copie du script restée en
+place. Le script courant la détecte et la supprime avant `caelestia install`.
+Pour réparer immédiatement sans relancer tout le script :
+
+```bash
+mv ~/.config/hypr/variables.lua ~/.config/hypr/variables.lua.old
+caelestia install --aur-helper paru
+hyprctl reload
 ```
 
 ## Bibliothèques Python
@@ -121,9 +143,9 @@ manquants dans le résumé.
 
 ## Sécurité et sauvegardes
 
-- Tout fichier modifié est sauvegardé **hors** de `~/.config/hypr/`
-  (pour qu'un `source = dossier/*` ne le recharge pas par erreur) :
-  `~/.local/state/setup-nouveau-pc/backups/<horodatage>/`
+- Tout fichier modifié est sauvegardé **hors** de `~/.config/hypr/` et de
+  `~/.config/caelestia/` (pour qu'un `source = dossier/*` ne le recharge pas
+  par erreur) : `~/.local/state/setup-nouveau-pc/backups/<horodatage>/`
 - `pacman.conf` et `mirrorlist` sont copiés avec un suffixe horodaté avant
   toute modification.
 - Le script ne fait jamais de `pacman -Sy` sans `-Su` (pas de mises à
