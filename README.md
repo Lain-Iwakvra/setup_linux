@@ -20,8 +20,9 @@ Projet **autonome** : il ne dépend pas du dépôt `lib`.
 ## Les 5 étapes
 
 1. **Miroirs, multilib, mise à jour complète** — active `[multilib]`,
-   régénère la liste de miroirs via `reflector` (France d'abord), puis
-   `pacman -Syu` complet avec mise à jour des trousseaux de clés.
+   régénère la liste de miroirs via `reflector` (France d'abord, puis
+   France/Allemagne/Belgique en repli, avec vérification des lignes `Server`),
+   puis `pacman -Syu` complet avec mise à jour des trousseaux de clés.
 2. **Bootloader** — installe `os-prober` + `GRUB_DISABLE_OS_PROBER=false`
    si GRUB est détecté ; étape ignorée sous systemd-boot.
 3. **paru** — installe l'assistant AUR (paquet dépôt, puis `paru-bin`, puis

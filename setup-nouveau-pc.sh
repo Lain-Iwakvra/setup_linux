@@ -310,26 +310,31 @@ step_system() {
     sudo cp -a /etc/pacman.d/mirrorlist "/etc/pacman.d/mirrorlist.backup.$TIMESTAMP"
 
     # On écrit dans un fichier temporaire : la liste actuelle n'est remplacée
-    # que si reflector a réellement réussi.
-    local tmp_mirrors countries mirrors_ok=false
+    # que si reflector a réellement produit des lignes « Server = ».
+    local tmp_mirrors tmp_mirror_err countries selected_countries="" mirrors_ok=false
     tmp_mirrors="$(mktemp)"
+    tmp_mirror_err="$(mktemp)"
     for countries in "France" "France,Germany,Belgium"; do
-        if sudo reflector --country "$countries" --age 12 --protocol https --latest 10 \
-                --sort rate --save "$tmp_mirrors" && [[ -s "$tmp_mirrors" ]]; then
+        if sudo reflector --country "$countries" --age 24 --protocol https --latest 10 \
+                --sort rate --save "$tmp_mirrors" 2>"$tmp_mirror_err" \
+                && grep -q '^Server = ' "$tmp_mirrors"; then
             mirrors_ok=true
+            selected_countries="$countries"
             break
         fi
-        log_warn "reflector : aucun résultat avec « $countries »"
+        # Repli en cours : on garde le détail de l'échec pour le diagnostic,
+        # mais on n'alarme que si aucune tentative ne fonctionne.
+        log_sub "reflector : aucun miroir exploitable avec « $countries » : $(tr '\n' ' ' < "$tmp_mirror_err")"
     done
 
     if [[ "$mirrors_ok" == true ]]; then
         sudo install -m 644 "$tmp_mirrors" /etc/pacman.d/mirrorlist
-        log_ok "Nouvelle liste de miroirs enregistrée dans /etc/pacman.d/mirrorlist ($countries)"
+        log_ok "Nouvelle liste de miroirs enregistrée dans /etc/pacman.d/mirrorlist ($selected_countries)"
     else
         log_err "reflector a échoué : l'ancienne liste de miroirs est conservée."
         ISSUES+=("reflector : régénération des miroirs")
     fi
-    rm -f "$tmp_mirrors"
+    rm -f "$tmp_mirrors" "$tmp_mirror_err"
 
     # Sur Arch, installer des paquets sans mettre à jour le système (-Sy puis -S)
     # provoque des « mises à jour partielles » non supportées. On fait donc un
